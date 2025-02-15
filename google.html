@@ -1,0 +1,43 @@
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google Sign-In</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+      function handleCredentialResponse(response) {
+        console.log("Encoded JWT ID token: " + response.credential);
+
+        // Send the token to your server
+        fetch("https://asali-munafaa-be.vercel.app/user/auth/signIn/google", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          // body: JSON.stringify({ tokenId: response.credential }),
+          body: { tokenId: response.credential },
+        })
+          .then((response) => response.json())
+          .then((data) => console.log(data))
+          .catch((error) => console.error("Error:", error));
+      }
+
+      window.onload = function () {
+        google.accounts.id.initialize({
+          client_id:
+            "1017500648409-plru9pks7hi1q6qdtdq847pnt7hdi68h.apps.googleusercontent.com",
+          callback: handleCredentialResponse,
+          auto_select: true,
+          cancel_on_tap_outside: false,
+        });
+
+        google.accounts.id.prompt();
+      };
+    </script>
+  </head>
+  <body>
+    <h1>Google Sign-In Example</h1>
+    <div id="g_id_onload"></div>
+    <div id="buttonDiv"></div>
+  </body>
+</html>
