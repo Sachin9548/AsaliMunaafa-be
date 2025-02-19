@@ -60,7 +60,19 @@ const credentials = new Schema(
         token: String,
         generatedDate: { type: Date },
       },
+      metrics: {
+        totalOrders: { type: Number, default: 0 },
+        codOrders: { type: Number, default: 0 },
+        prepaidOrders: { type: Number, default: 0 },
+        deliveredOrders: { type: Number, default: 0 },
+        rtoOrders: { type: Number, default: 0 },
+        totalSale: { type: Number, default: 0 },
+        totalShippingCost: { type: Number, default: 0 }
+      },
+      // New field for keeping track of the latest processed order id.
+      lastProcessedId: { type: Number, default: 0 }
     },
+    
     // Delhivery
     delhivery: {
       apiToken: String,
