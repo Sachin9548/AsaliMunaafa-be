@@ -21,8 +21,19 @@ app.use(session({ secret: "secret", resave: true, saveUninitialized: true }));
 // app.get('/html', (req, res) => {
 //   res.sendFile(path.join(__dirname, 'google.html'));
 // });
+if(process.env.NODE_ENV === "production") {
+  app.use(express.static(__dirname + "/dist"));
+  app.get("*", (req, res) => {
+    res.sendFile(__dirname + "/dist/index.html");
+  });
+}
+
 app.use(mainRouter);
 app.use(error);
+
+
+
+
 
 //DB Connection
 const PORT = process.env.PORT || 8080;
