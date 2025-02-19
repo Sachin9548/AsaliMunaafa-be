@@ -1,5 +1,4 @@
 // overalldataController.js
-
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
@@ -58,8 +57,6 @@ const overalldataRouter = async (req, res) => {
         msg: "Shiprocket credentials not found",
       });
     }
-    const shiprocketToken = shiprocketCred.shiprocket.authToken.token;
-    const SHIPROCKET_API_BASE_URL = "https://apiv2.shiprocket.in/v1/external";
 
     // ----- Fire off API calls concurrently -----
 
@@ -92,17 +89,13 @@ const overalldataRouter = async (req, res) => {
       }
     );
 
-    // 3. Shiprocket Shipments (to compute Shipping Spend)
-    const shiprocketPromise = axios.get(`${SHIPROCKET_API_BASE_URL}/shipments`, {
-      headers: { Authorization: `Bearer ${shiprocketToken}` },
-      timeout: 30000, // 30 seconds timeout
-    });
+    // Instead of calling the Shiprocket endpoint, we fetch the shipping spend from the database.
+    // const shiprocketPromise = axios.get(`${SHIPROCKET_API_BASE_URL}/shipments`, { ... });
 
-    // Await all API calls concurrently
-    const [shopifyResponse, metaResponse, shiprocketResponse] = await Promise.all([
+    // Await the Shopify and Meta API calls concurrently.
+    const [shopifyResponse, metaResponse] = await Promise.all([
       shopifyPromise,
       metaPromise,
-      shiprocketPromise,
     ]);
 
     // ----- Process Shopify Data -----
@@ -154,28 +147,12 @@ const overalldataRouter = async (req, res) => {
         : {};
     const marketingSpend = insightsData.spend ? parseFloat(insightsData.spend) : 0;
 
-    // ----- Process Shiprocket Data -----
-    // We assume the shipments endpoint returns an object with a "shipments" array.
-    const shipmentsData = shiprocketResponse.data;
-    let shippingSpend = 0;
-    if (
-      shipmentsData &&
-      shipmentsData.shipments &&
-      Array.isArray(shipmentsData.shipments)
-    ) {
-      shipmentsData.shipments.forEach((shipment) => {
-        // Instead of a direct "shipping_charge" field, use the "charges" object.
-        // Here we assume that "total_shipping_charge" is provided within charges.
-        const shippingCharge =
-          shipment.charges && shipment.charges.total_shipping_charge
-            ? parseFloat(shipment.charges.total_shipping_charge)
-            : 0;
-        shippingSpend += shippingCharge;
-      });
-    }
+    // ----- Process Shiprocket Data (from Database) -----
+    // Retrieve shipping spend from the database instead of making a Shiprocket API request.
+    const shippingSpend = shiprocketCred.shiprocket.metrics.totalShippingCost || 0;
 
     // ----- Compute Profit Figures -----
-    // Gross Profit: Total Sales minus Shipping Spend (from Shiprocket)
+    // Gross Profit: Total Sales minus Shipping Spend (from DB)
     const grossProfit = totalSales - shippingSpend;
     // Net Profit: Gross Profit minus Marketing Spend (from Meta)
     const netProfit = grossProfit - marketingSpend;
@@ -199,7 +176,7 @@ const overalldataRouter = async (req, res) => {
         { bgColor: "#390083", title: "Total Sales", ruppes: `₹${totalSales.toFixed(2)}` },
         { bgColor: "#00848E", title: "Total Orders", ruppes: totalOrders.toString() },
         { bgColor: "#F49342", title: "Order Cancellation", ruppes: orderCancellationCount.toString() },
-        { bgColor: "#4489C8", title: "RTO", ruppes: "0" }, // No dynamic RTO info provided
+        { bgColor: "#4489C8", title: "RTO", ruppes: shiprocketCred.shiprocket.metrics.rtoOrders.toString() }, // No dynamic RTO info provided
         { bgColor: "#FDC00F", title: "Gross Profit", ruppes: `₹${grossProfit.toFixed(2)}` },
         { bgColor: "#FD6AC6", title: "Marketing", ruppes: `₹${marketingSpend.toFixed(2)}` },
         { bgColor: "#09347F", title: "Shipping", ruppes: `₹${shippingSpend.toFixed(2)}` },
@@ -279,8 +256,6 @@ const overalldataRouter = async (req, res) => {
       msg: "An error occurred while fetching data",
     });
   }
-}
-
-
+};
 
 module.exports = overalldataRouter;
