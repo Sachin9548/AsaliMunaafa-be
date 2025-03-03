@@ -1,0 +1,8 @@
+{
+    "loginMessage": "Successfully logged in.",
+    "signupMessage": "Your registration with Asali Munafaa is successful.",
+    "dataUpdateMessage": "Data updated successfully",
+    "getInTouchMessage":"Thank You for Getting in Touch!",
+    "storeMessage":"Please enter store name.",
+    "errorMessage":"Please fill up your field !"
+    }
