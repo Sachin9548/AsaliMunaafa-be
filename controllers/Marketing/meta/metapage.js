@@ -1,4 +1,3 @@
-// controllers/metaController.js
 const axios = require("axios");
 const Credentials = require("../../../models/credentials");
 const Response = require("../../../helpers/response");
@@ -35,12 +34,12 @@ const getMetaData = async (req, res) => {
     }
 
     // Build parameters for the Meta Insights API.
-    // Using level: "campaign" groups results by campaign.
     const insightsParams = {
       access_token: accessToken,
       time_range: timeRange,
       level: "campaign", // Groups by campaign.
-      fields: "date_start,spend,actions,ctr,cpc,impressions,clicks,campaign_id,campaign_name",
+      fields:
+        "date_start,spend,actions,action_values,ctr,cpc,impressions,clicks,campaign_id,campaign_name",
     };
 
     // DEBUG: Log the request.
@@ -67,40 +66,64 @@ const getMetaData = async (req, res) => {
     insights.forEach((item) => {
       const spend = parseFloat(item.spend);
       totalSpend += spend;
-      totalImpressions += parseInt(item.impressions || 0);
-      totalClicks += parseInt(item.clicks || 0);
+      const impressions = parseInt(item.impressions || 0);
+      totalImpressions += impressions;
+      const clicks = parseInt(item.clicks || 0);
+      totalClicks += clicks;
 
-      // "purchase" action for orders.
+      // Retrieve "purchase" action details for order count.
       const purchaseAction = item.actions
         ? item.actions.find((a) => a.action_type === "purchase")
         : null;
       const orders = purchaseAction ? parseInt(purchaseAction.value) : 0;
       totalOrders += orders;
-      // Revenue: replace this dummy calculation with your actual logic if needed.
-      const revenue = orders * 100;
+
+      // Use actual revenue from Meta if available via action_values.
+      const revenueAction = item.action_values
+        ? item.action_values.find((a) => a.action_type === "purchase")
+        : null;
+      const revenue = revenueAction
+        ? parseFloat(revenueAction.value)
+        : orders * 100; // Fallback dummy calculation.
       totalRevenue += revenue;
 
-      // "website_purchase" action.
-      const websitePurchaseAction = item.actions
-        ? item.actions.find((a) => a.action_type === "website_purchase")
-        : null;
-      const websitePurchases = websitePurchaseAction ? parseInt(websitePurchaseAction.value) : 0;
+      // Retrieve website purchase data.
+      let websitePurchases = 0;
+      if (item.actions) {
+        // Check for both 'website_purchase' and an alternative like 'offsite_conversion.fb_pixel_purchase'
+        const websitePurchaseAction = item.actions.find(
+          (a) =>
+            a.action_type === "website_purchase" ||
+            a.action_type === "offsite_conversion.fb_pixel_purchase"
+        );
+        websitePurchases = websitePurchaseAction ? parseInt(websitePurchaseAction.value) : 0;
+      }
       totalWebsitePurchases += websitePurchases;
 
       labels.push(item.date_start);
       spendData.push(spend);
 
-      // Aggregate campaign-level data.
+      // Aggregate campaign-level data (including impressions and clicks).
       const campaignId = item.campaign_id;
       const campaignName = item.campaign_name;
       if (campaignId) {
         if (!campaignsMap[campaignId]) {
-          campaignsMap[campaignId] = { name: campaignName, spend: 0, orders: 0, revenue: 0, websitePurchases: 0 };
+          campaignsMap[campaignId] = {
+            name: campaignName,
+            spend: 0,
+            orders: 0,
+            revenue: 0,
+            websitePurchases: 0,
+            impressions: 0,
+            clicks: 0,
+          };
         }
         campaignsMap[campaignId].spend += spend;
         campaignsMap[campaignId].orders += orders;
         campaignsMap[campaignId].revenue += revenue;
         campaignsMap[campaignId].websitePurchases += websitePurchases;
+        campaignsMap[campaignId].impressions += impressions;
+        campaignsMap[campaignId].clicks += clicks;
       }
     });
 
@@ -120,7 +143,7 @@ const getMetaData = async (req, res) => {
       {
         bgColor: "#AB55FF",
         title: "ROAS",
-        rupees: totalSpend > 0 ? `${((totalRevenue / totalSpend) * 100).toFixed(2)}%` : "N/A",
+        rupees: totalSpend > 0 ? `${(totalRevenue / totalSpend).toFixed(2)}X` : "N/A",
       },
       {
         bgColor: "#FDC00F",
@@ -147,7 +170,7 @@ const getMetaData = async (req, res) => {
       ],
     };
 
-    // Build campaigns array (table data).
+    // Build campaigns array for table display.
     const campaigns = Object.keys(campaignsMap).map((campaignId) => {
       const camp = campaignsMap[campaignId];
       return {
@@ -160,93 +183,59 @@ const getMetaData = async (req, res) => {
       };
     });
 
-    // Compute Revenue Distribution (Campaign Revenue Distribution).
-    const campaignRevenueArray = Object.values(campaignsMap).sort((a, b) => b.revenue - a.revenue);
+    // Generate dynamic pie chart distributions using all campaigns.
+    const colorPalette = [
+      "#4C45E3",
+      "#2453FF",
+      "#1FC105",
+      "#FDC00F",
+      "#7700D2",
+      "#117899",
+      "#F16C20",
+      "#ECAA38",
+      "#FF5733",
+      "#33FF57",
+    ];
+
+    // Revenue Distribution (all campaigns).
     let revenueDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
-    if (campaignRevenueArray.length > 0) {
-      if (campaignRevenueArray.length >= 2) {
-        revenueDistribution.labels.push(campaignRevenueArray[0].name);
-        revenueDistribution.datasets[0].data.push(Math.round(campaignRevenueArray[0].revenue));
-        revenueDistribution.labels.push(campaignRevenueArray[1].name);
-        revenueDistribution.datasets[0].data.push(Math.round(campaignRevenueArray[1].revenue));
-        const otherRevenue = campaignRevenueArray.slice(2).reduce((acc, c) => acc + c.revenue, 0);
-        revenueDistribution.labels.push("Other");
-        revenueDistribution.datasets[0].data.push(Math.round(otherRevenue));
-      } else {
-        revenueDistribution.labels.push(campaignRevenueArray[0].name);
-        revenueDistribution.datasets[0].data.push(Math.round(campaignRevenueArray[0].revenue));
-      }
-      revenueDistribution.datasets[0].backgroundColor = ["#4C45E3", "#2453FF", "#1FC105"].slice(0, revenueDistribution.labels.length);
-    }
+    Object.values(campaignsMap).forEach((camp, index) => {
+      revenueDistribution.labels.push(camp.name);
+      revenueDistribution.datasets[0].data.push(Math.round(camp.revenue));
+      revenueDistribution.datasets[0].backgroundColor.push(colorPalette[index % colorPalette.length]);
+    });
 
-    // Compute Orders Distribution (Campaign Orders Distribution).
-    const campaignOrdersArray = Object.values(campaignsMap).sort((a, b) => b.orders - a.orders);
+    // Orders Distribution (all campaigns).
     let ordersDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
-    if (campaignOrdersArray.length > 0) {
-      if (campaignOrdersArray.length >= 2) {
-        ordersDistribution.labels.push(campaignOrdersArray[0].name);
-        ordersDistribution.datasets[0].data.push(campaignOrdersArray[0].orders);
-        ordersDistribution.labels.push(campaignOrdersArray[1].name);
-        ordersDistribution.datasets[0].data.push(campaignOrdersArray[1].orders);
-        const otherOrders = campaignOrdersArray.slice(2).reduce((acc, c) => acc + c.orders, 0);
-        ordersDistribution.labels.push("Other");
-        ordersDistribution.datasets[0].data.push(otherOrders);
-      } else {
-        ordersDistribution.labels.push(campaignOrdersArray[0].name);
-        ordersDistribution.datasets[0].data.push(campaignOrdersArray[0].orders);
-      }
-      ordersDistribution.datasets[0].backgroundColor = ["#FDC00F", "#7700D2", "#117899"].slice(0, ordersDistribution.labels.length);
-    }
+    Object.values(campaignsMap).forEach((camp, index) => {
+      ordersDistribution.labels.push(camp.name);
+      ordersDistribution.datasets[0].data.push(camp.orders);
+      ordersDistribution.datasets[0].backgroundColor.push(colorPalette[index % colorPalette.length]);
+    });
 
-    // Update Impressions and Clicks distributions with more meaningful labels.
-    const impressionsDistribution = {
-      labels: ["High Impressions", "Moderate Impressions", "Low Impressions"],
-      datasets: [
-        {
-          data: [
-            Math.round(totalImpressions * 0.5),
-            Math.round(totalImpressions * 0.3),
-            totalImpressions - Math.round(totalImpressions * 0.5) - Math.round(totalImpressions * 0.3),
-          ],
-          backgroundColor: ["#F16C20", "#ECAA38", "#7700D2"],
-        },
-      ],
-    };
+    // Impressions Distribution (all campaigns).
+    let impressionsDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
+    Object.values(campaignsMap).forEach((camp, index) => {
+      impressionsDistribution.labels.push(camp.name);
+      impressionsDistribution.datasets[0].data.push(camp.impressions);
+      impressionsDistribution.datasets[0].backgroundColor.push(colorPalette[index % colorPalette.length]);
+    });
 
-    const clicksDistribution = {
-      labels: ["High Clicks", "Moderate Clicks", "Low Clicks"],
-      datasets: [
-        {
-          data: [
-            Math.round(totalClicks * 0.4),
-            Math.round(totalClicks * 0.4),
-            totalClicks - Math.round(totalClicks * 0.4) - Math.round(totalClicks * 0.4),
-          ],
-          backgroundColor: ["#117899", "#0F5B78", "#1FC105"],
-        },
-      ],
-    };
+    // Clicks Distribution (all campaigns).
+    let clicksDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
+    Object.values(campaignsMap).forEach((camp, index) => {
+      clicksDistribution.labels.push(camp.name);
+      clicksDistribution.datasets[0].data.push(camp.clicks);
+      clicksDistribution.datasets[0].backgroundColor.push(colorPalette[index % colorPalette.length]);
+    });
 
-    const websitePurchaseDistribution = (() => {
-      const campaignWPArray = Object.values(campaignsMap).sort((a, b) => b.websitePurchases - a.websitePurchases);
-      let wpDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
-      if (campaignWPArray.length > 0) {
-        if (campaignWPArray.length >= 2) {
-          wpDistribution.labels.push(campaignWPArray[0].name);
-          wpDistribution.datasets[0].data.push(Math.round(campaignWPArray[0].websitePurchases));
-          wpDistribution.labels.push(campaignWPArray[1].name);
-          wpDistribution.datasets[0].data.push(Math.round(campaignWPArray[1].websitePurchases));
-          const otherWP = campaignWPArray.slice(2).reduce((acc, c) => acc + c.websitePurchases, 0);
-          wpDistribution.labels.push("Other");
-          wpDistribution.datasets[0].data.push(Math.round(otherWP));
-        } else {
-          wpDistribution.labels.push(campaignWPArray[0].name);
-          wpDistribution.datasets[0].data.push(Math.round(campaignWPArray[0].websitePurchases));
-        }
-        wpDistribution.datasets[0].backgroundColor = ["#4C45E3", "#2453FF", "#1FC105"].slice(0, wpDistribution.labels.length);
-      }
-      return wpDistribution;
-    })();
+    // Website Purchase Distribution (all campaigns).
+    let websitePurchaseDistribution = { labels: [], datasets: [{ data: [], backgroundColor: [] }] };
+    Object.values(campaignsMap).forEach((camp, index) => {
+      websitePurchaseDistribution.labels.push(camp.name);
+      websitePurchaseDistribution.datasets[0].data.push(camp.websitePurchases);
+      websitePurchaseDistribution.datasets[0].backgroundColor.push(colorPalette[index % colorPalette.length]);
+    });
 
     const costPerWebsitePurchase = totalWebsitePurchases > 0 ? (totalSpend / totalWebsitePurchases).toFixed(2) : "N/A";
 

@@ -43,6 +43,9 @@ const update = async (req, res) => {
       { new: true }
     );
 
+
+    console.log("updateData:", updateData);
+
     const statusCode = updateData ? STATUS_CODE.OK : STATUS_CODE.BAD_REQUEST;
     const message = updateData
       ? INFO_MSGS.UPDATED_SUCCESSFULLY

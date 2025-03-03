@@ -5,12 +5,54 @@ const { STATUS_CODE, ERROR_MSGS, INFO_MSGS } = require("../../helpers/constant")
 const { handleException } = require("../../helpers/exception");
 const Response = require("../../helpers/response");
 
+/**
+ * Fetch all orders from Shopify using pagination.
+ * Uses the "page_info" cursor parameter from Shopify's Link header.
+ */
+const fetchAllOrders = async (shopifyClient) => {
+  let orders = [];
+  // Updated URL to include status=any so that all orders are fetched.
+  let url = "/orders.json?limit=250&status=any";
+  
+  while (url) {
+    const response = await shopifyClient.get(url);
+    const currentOrders = response.data.orders;
+    orders = orders.concat(currentOrders);
+    
+    // Check for a next page in the Link header
+    const linkHeader = response.headers.link;
+    if (linkHeader) {
+      // Example Link header format:
+      // <https://shop.myshopify.com/admin/api/2023-04/orders.json?limit=250&page_info=xxx>; rel="next"
+      const links = linkHeader.split(",");
+      const nextLink = links.find((link) => link.includes('rel="next"'));
+      if (nextLink) {
+        // Extract URL inside the < >
+        const match = nextLink.match(/<([^>]+)>/);
+        if (match && match[1]) {
+          // Remove baseURL part from the URL (shopifyClient already has baseURL)
+          const fullNextUrl = match[1];
+          const baseURL = shopifyClient.defaults.baseURL;
+          url = fullNextUrl.replace(baseURL, "");
+        } else {
+          url = null;
+        }
+      } else {
+        url = null;
+      }
+    } else {
+      url = null;
+    }
+  }
+  return orders;
+};
+
 const fetchProducts = async (req, res) => {
   const { logger } = req;
   try {
     const { userId } = req;
 
-    // Get optional date filter from query parameters
+    // Get optional date filter from query parameters.
     const { start_date, end_date } = req.query;
     const startDate = start_date ? new Date(start_date) : null;
     const endDate = end_date ? new Date(end_date) : null;
@@ -46,33 +88,8 @@ const fetchProducts = async (req, res) => {
       timeout: 10000,
     });
 
-    // Fetch products and orders concurrently.
-    const [productsResult, ordersResult] = await Promise.allSettled([
-      shopifyClient.get("/products.json"),
-      shopifyClient.get("/orders.json"),
-    ]);
-
-    if (
-      productsResult.status !== "fulfilled" ||
-      ordersResult.status !== "fulfilled"
-    ) {
-      const errors = [];
-      if (productsResult.status !== "fulfilled") {
-        errors.push(`Products fetch error: ${productsResult.reason}`);
-      }
-      if (ordersResult.status !== "fulfilled") {
-        errors.push(`Orders fetch error: ${ordersResult.reason}`);
-      }
-      console.error("Error fetching data from Shopify:", errors.join("; "));
-      return Response.error({
-        res,
-        status: STATUS_CODE.BAD_REQUEST,
-        msg: "Failed to fetch products or orders from Shopify",
-      });
-    }
-
-    const products = productsResult.value.data.products;
-    const fullOrders = ordersResult.value.data.orders; // all orders fetched
+    // Fetch all orders with pagination.
+    const fullOrders = await fetchAllOrders(shopifyClient);
 
     // Filter orders by date (if provided)
     let orders = fullOrders;
@@ -86,129 +103,13 @@ const fetchProducts = async (req, res) => {
     }
 
     // Compute store-level metrics from orders.
-    const totalSales = orders.reduce(
-      (sum, order) => sum + parseFloat(order.total_price),
-      0
-    );
     const totalOrders = orders.length;
-    const averageOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
+    const totalSales = Math.round(
+      orders.reduce((sum, order) => sum + parseFloat(order.total_price), 0)
+    );
+    const averageOrderValue = totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0;
 
-    // Chart data: orders over time (by date)
-    const ordersByDate = {};
-    orders.forEach((order) => {
-      const date = order.created_at.split("T")[0];
-      ordersByDate[date] = (ordersByDate[date] || 0) + 1;
-    });
-    const sortedDates = Object.keys(ordersByDate).sort();
-    const chartData = {
-      labels: sortedDates,
-      datasets: [
-        {
-          data: sortedDates.map((date) => ordersByDate[date]),
-          label: "Orders Over Time",
-          borderColor: "#2453FF",
-          borderWidth: 2,
-          fill: false,
-        },
-      ],
-    };
-
-    // Simulated sessions by devices.
-    const sessionsByDevices = {
-      Desktop: 70,
-      Mobile: 30,
-    };
-
-    // Process products to compute per–product analytics.
-    const combinedData = [];
-    for (const product of products) {
-      let totalSalesCount = 0;
-      let totalRevenue = 0;
-      let totalCost = 0;
-
-      // Process each variant (fetch inventory cost if available)
-      for (const variant of product.variants) {
-        let inventoryItemCost = 0;
-        if (variant.inventory_item_id) {
-          try {
-            const invResponse = await shopifyClient.get(
-              `/inventory_items/${variant.inventory_item_id}.json`
-            );
-            const inventoryItem = invResponse.data.inventory_item;
-            inventoryItemCost =
-              inventoryItem && inventoryItem.cost
-                ? parseFloat(inventoryItem.cost)
-                : 0;
-          } catch (invError) {
-            console.error(
-              `Error fetching inventory for variant ${variant.id}: ${invError.message}`
-            );
-          }
-        } else {
-          console.warn(
-            `Variant ${variant.id} does not have a valid inventory_item_id`
-          );
-        }
-
-        // Find orders that include this product.
-        const productSales = orders.filter((order) =>
-          order.line_items.some((item) => item.product_id === product.id)
-        );
-
-        // Total quantity sold for this product.
-        const variantSalesCount = productSales.reduce((sum, order) => {
-          return (
-            sum +
-            order.line_items.reduce((itemSum, item) => {
-              return item.product_id === product.id
-                ? itemSum + item.quantity
-                : itemSum;
-            }, 0)
-          );
-        }, 0);
-        totalSalesCount += variantSalesCount;
-
-        // Total revenue for this product.
-        totalRevenue += productSales.reduce((sum, order) => {
-          return (
-            sum +
-            order.line_items.reduce((itemSum, item) => {
-              return item.product_id === product.id
-                ? itemSum + parseFloat(item.price) * item.quantity
-                : itemSum;
-            }, 0)
-          );
-        }, 0);
-
-        // Total cost (using inventory cost).
-        totalCost += inventoryItemCost * variantSalesCount;
-      }
-      const profits = totalRevenue - totalCost;
-      const profitMargin = totalRevenue ? (profits / totalRevenue) * 100 : 0;
-      combinedData.push({
-        productName: product.title,
-        sales: totalSalesCount,
-        totalSales: totalRevenue,
-        profits,
-        profitMargin,
-        grossProfit: profits,
-        ...product,
-      });
-    }
-
-    // Determine best sellers, most profitable, and least profitable.
-    const bestSellers = [...combinedData]
-      .sort((a, b) => b.sales - a.sales)
-      .slice(0, 5);
-    const mostProfitable = [...combinedData]
-      .sort((a, b) => b.profits - a.profits)
-      .slice(0, 5);
-    const leastProfitable = [...combinedData]
-      .sort((a, b) => a.profits - b.profits)
-      .slice(0, 5);
-
-    // ---- CUSTOMER ANALYTICS ----
-    // Build a map of customers (using orders that have a customer object)
+    // CUSTOMER ANALYTICS
     const customersMap = {};
     orders.forEach((order) => {
       if (order.customer && order.customer.id) {
@@ -217,11 +118,9 @@ const fetchProducts = async (req, res) => {
           customersMap[custId] = {
             firstOrderDate: order.created_at,
             ordersCount: 1,
-            totalSpent: parseFloat(order.total_price),
           };
         } else {
           customersMap[custId].ordersCount++;
-          customersMap[custId].totalSpent += parseFloat(order.total_price);
           if (new Date(order.created_at) < new Date(customersMap[custId].firstOrderDate)) {
             customersMap[custId].firstOrderDate = order.created_at;
           }
@@ -229,11 +128,9 @@ const fetchProducts = async (req, res) => {
       }
     });
     const totalCustomers = Object.keys(customersMap).length;
-
-    // New vs. Returning customers:
-    let newCustomersCount = 0;
+    let newCustomers = 0;
     if (startDate && endDate) {
-      newCustomersCount = new Set(
+      newCustomers = new Set(
         orders
           .filter(
             (order) =>
@@ -245,20 +142,30 @@ const fetchProducts = async (req, res) => {
           .map((order) => order.customer.id)
       ).size;
     } else {
-      newCustomersCount = Object.values(customersMap).filter(
+      newCustomers = Object.values(customersMap).filter(
         (cust) => cust.ordersCount === 1
       ).length;
     }
-    const returningCustomersCount = totalCustomers - newCustomersCount;
-
-    // Repurchase rate: % of customers with more than one order.
-    const customersWithRepurchase = Object.values(customersMap).filter(
-      (cust) => cust.ordersCount > 1
-    ).length;
+    const returningCustomers = totalCustomers - newCustomers;
     const repurchaseRate =
-      totalCustomers > 0 ? (customersWithRepurchase / totalCustomers) * 100 : 0;
+      totalCustomers > 0
+        ? Math.round(
+            (Object.values(customersMap).filter((cust) => cust.ordersCount > 1).length / totalCustomers) * 100
+          )
+        : 0;
 
-    // New Customer Growth Rate: if date filter provided, compare with previous period.
+    // New vs. Returning Customers Chart Data.
+    const newVsReturningChartData = {
+      labels: ["New Customers", "Returning Customers"],
+      datasets: [
+        {
+          data: [newCustomers, returningCustomers],
+          backgroundColor: ["#4C45E3", "#2453FF"],
+        },
+      ],
+    };
+
+    // New Customer Growth Rate: Compare with previous period if date filter provided.
     let newCustomerGrowthRate = 0;
     if (startDate && endDate) {
       const duration = endDate.getTime() - startDate.getTime();
@@ -285,7 +192,7 @@ const fetchProducts = async (req, res) => {
           }
         }
       });
-      const previousNewCustomersCount = new Set(
+      const previousNewCustomers = new Set(
         previousOrders
           .filter(
             (order) =>
@@ -296,77 +203,60 @@ const fetchProducts = async (req, res) => {
           )
           .map((order) => order.customer.id)
       ).size;
-      if (previousNewCustomersCount > 0) {
-        newCustomerGrowthRate =
-          ((newCustomersCount - previousNewCustomersCount) / previousNewCustomersCount) * 100;
+      if (previousNewCustomers > 0) {
+        newCustomerGrowthRate = Math.round(((newCustomers - previousNewCustomers) / previousNewCustomers) * 100);
       } else {
-        newCustomerGrowthRate = newCustomersCount > 0 ? 100 : 0;
+        newCustomerGrowthRate = newCustomers > 0 ? 100 : 0;
       }
     }
 
-    // Cohort Analysis: group customers by the month of their first order.
-    const cohortMap = {};
-    for (const custId in customersMap) {
-      const firstOrderDate = new Date(customersMap[custId].firstOrderDate);
-      const cohortKey = `${firstOrderDate.getFullYear()}-${("0" + (firstOrderDate.getMonth() + 1)).slice(-2)}`;
-      if (!cohortMap[cohortKey]) {
-        cohortMap[cohortKey] = { totalRevenue: 0, count: 0 };
-      }
-      cohortMap[cohortKey].totalRevenue += customersMap[custId].totalSpent;
-      cohortMap[cohortKey].count++;
-    }
-    const cohortAnalysis = Object.entries(cohortMap).map(
-      ([cohort, data]) => ({
-        cohort,
-        totalRevenuePerCustomer: data.count > 0 ? data.totalRevenue / data.count : 0,
-        totalRevenue: data.totalRevenue,
-        customerCount: data.count,
-      })
-    );
-
-    // Prepare chart data for new vs. returning customers.
-    const newVsReturningChartData = {
-      labels: ["New Customers", "Returning Customers"],
-      datasets: [
-        {
-          data: [newCustomersCount, returningCustomersCount],
-          backgroundColor: ["#4C45E3", "#2453FF"],
-        },
-      ],
-    };
-
-    // ---- ADDITIONAL CHART DATA ----
-    // Overall Shipment Status (simulate based on orders count)
-    const totalShipment = totalOrders;
-    const inTransit = Math.floor(totalShipment * 0.3);
-    const delivered = Math.floor(totalShipment * 0.5);
-    const rto = Math.floor(totalShipment * 0.1);
-    const ndr = totalShipment - (inTransit + delivered + rto);
+    // Overall Shipment Status: using actual order statuses.
+    const deliveredOrders = orders.filter(
+      (order) => order.fulfillment_status === "fulfilled"
+    ).length;
+    const cancelledOrders = orders.filter(
+      (order) => order.cancelled_at
+    ).length;
+    const pendingOrders = totalOrders - deliveredOrders - cancelledOrders;
     const overallStatusChartData = {
-      labels: ["Total Shipment", "In Transit", "Delivered", "RTO", "NDR"],
+      labels: ["Delivered", "Cancelled", "Pending"],
       datasets: [
         {
-          data: [totalShipment, inTransit, delivered, rto, ndr],
-          backgroundColor: ["#117899", "#0F5B78", "#1FC105", "#F16C20", "#ECAA38"],
+          data: [deliveredOrders, cancelledOrders, pendingOrders],
+          backgroundColor: ["#1FC105", "#F16C20", "#ECAA38"],
         },
       ],
     };
 
-    // Revenue Chart Data: Top 3 products by revenue
-    const sortedByRevenue = [...combinedData]
-      .sort((a, b) => b.totalSales - a.totalSales)
-      .slice(0, 3);
-    const revenueLabels = sortedByRevenue.map((item) => item.productName);
-    const revenueValues = sortedByRevenue.map((item) => item.totalSales);
-    const revenueChartData = {
-      labels: revenueLabels,
-      datasets: [
-        {
-          data: revenueValues,
-          backgroundColor: ["#4C45E3", "#2453FF", "#1FC105"],
-        },
-      ],
-    };
+    // Best Selling Products and Least Selling Products:
+    // Aggregate sales by product_id from order line_items.
+    const productSalesMap = {};
+    orders.forEach((order) => {
+      order.line_items.forEach((item) => {
+        const productId = item.product_id;
+        if (!productSalesMap[productId]) {
+          productSalesMap[productId] = {
+            productName: item.title,
+            sales: 0,
+            totalSales: 0,
+          };
+        }
+        productSalesMap[productId].sales += item.quantity;
+        productSalesMap[productId].totalSales += parseFloat(item.price) * item.quantity;
+        // Round total sales for each product
+        productSalesMap[productId].totalSales = Math.round(productSalesMap[productId].totalSales);
+      });
+    });
+
+    // Calculate best selling products (top 5 by quantity sold)
+    const bestSellers = Object.values(productSalesMap)
+      .sort((a, b) => b.sales - a.sales)
+      .slice(0, 5);
+
+    // Calculate 5 least selling products (lowest quantity sold)
+    const leastSellers = Object.values(productSalesMap)
+      .sort((a, b) => a.sales - b.sales)
+      .slice(0, 5);
 
     return Response.success({
       req,
@@ -374,24 +264,18 @@ const fetchProducts = async (req, res) => {
       status: STATUS_CODE.OK,
       msg: INFO_MSGS.SUCCESS,
       data: {
-        Response: combinedData,
         totalSales,
         averageOrderValue,
         totalOrders,
         totalCustomers,
-        newCustomers: newCustomersCount,
-        returningCustomers: returningCustomersCount,
+        newCustomers,
+        returningCustomers,
         newCustomerGrowthRate,
         repurchaseRate,
-        cohortAnalysis,
-        bestSellers,
-        mostProfitable,
-        leastProfitable,
-        chartData,
-        sessionsByDevices,
         newVsReturningChartData,
         overallStatusChartData,
-        revenueChartData,
+        bestSellers,
+        leastSellers, // Added least selling products data
       },
     });
   } catch (error) {
@@ -404,3 +288,4 @@ const fetchProducts = async (req, res) => {
 };
 
 module.exports = { fetchProducts };
+

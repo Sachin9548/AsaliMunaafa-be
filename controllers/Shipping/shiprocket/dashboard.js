@@ -56,8 +56,7 @@ const fetchNewOrders = async (token, lastProcessedId) => {
       );
       newOrders = newOrders.concat(filteredOrders);
 
-      // If this page contains some old orders (i.e. not all orders are new),
-      // then we can stop fetching further pages.
+      // If this page contains some old orders, then stop further pagination.
       if (filteredOrders.length < pageOrders.length) {
         break;
       }
@@ -96,7 +95,7 @@ const dashboard = async (req, res) => {
     );
     console.debug(`DEBUG: Last processed id from DB: ${lastProcessedId}`);
 
-    // Fetch only new orders from the API (up to the point where orders become old)
+    // Fetch only new orders from the API
     const newOrders = await fetchNewOrders(token, lastProcessedId);
     console.debug(
       `DEBUG: New orders count: ${newOrders.length}. New order IDs: ${newOrders
@@ -129,8 +128,11 @@ const dashboard = async (req, res) => {
         newDeliveredOrders++;
       }
 
-      // Count RTO orders if the status includes "RTO"
-      if (order.status && order.status.toUpperCase().includes("RTO")) {
+      // Count RTO orders - trim the status before checking to avoid formatting issues.
+      if (
+        order.status &&
+        order.status.trim().toUpperCase().includes("RTO")
+      ) {
         newRtoOrders++;
       }
 

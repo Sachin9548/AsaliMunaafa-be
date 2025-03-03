@@ -4,14 +4,48 @@ const router = express.Router();
 const axios = require("axios");
 const Credentials = require("../../models/credentials");
 
-// GET /overalldata
+// Helper function to extract the next page URL from Shopify's Link header.
+function extractNextUrl(linkHeader) {
+  const links = linkHeader.split(",");
+  for (let link of links) {
+    const [urlPart, relPart] = link.split(";");
+    if (relPart && relPart.includes('rel="next"')) {
+      // Remove the surrounding '<' and '>' from the URL part.
+      return urlPart.trim().slice(1, -1);
+    }
+  }
+  return null;
+}
+
+// Fetch all Shopify orders using pagination.
+async function fetchAllOrders(shopifyStore, shopifyAccessToken) {
+  let orders = [];
+  // Request the maximum number (250) per page.
+  let url = `https://${shopifyStore}/admin/api/2023-01/orders.json?status=any&limit=250`;
+
+  while (url) {
+    const response = await axios.get(url, {
+      headers: { "X-Shopify-Access-Token": shopifyAccessToken },
+    });
+    orders = orders.concat(response.data.orders);
+
+    // Check if a next page exists from the Link header.
+    const linkHeader = response.headers.link;
+    if (linkHeader && linkHeader.includes('rel="next"')) {
+      url = extractNextUrl(linkHeader);
+    } else {
+      url = null;
+    }
+  }
+  return orders;
+}
+
 const overalldataRouter = async (req, res) => {
   const { logger } = req;
 
   try {
     // Assume authentication middleware sets req.userId
     const userId = req.userId;
-    console.log("userId", userId);
 
     // ----- Retrieve Shopify Credentials -----
     const shopifyCred = await Credentials.findOne({
@@ -60,18 +94,10 @@ const overalldataRouter = async (req, res) => {
 
     // ----- Fire off API calls concurrently -----
 
-    // 1. Shopify Orders (all statuses)
-    const shopifyPromise = axios.get(
-      `https://${shopifyStore}/admin/api/2023-01/orders.json?status=any`,
-      {
-        headers: {
-          "X-Shopify-Access-Token": shopifyAccessToken,
-        },
-      }
-    );
+    // 1. Shopify Orders (using pagination to fetch all orders)
+    const shopifyPromise = fetchAllOrders(shopifyStore, shopifyAccessToken);
 
-    // 2. Meta Marketing Insights (fetch spend)
-    // Default to a 2-year range ending today if no dates are provided.
+    // 2. Meta Marketing Insights (fetch spend for the last 2 years)
     const today = new Date();
     const twoYearsAgo = new Date(today);
     twoYearsAgo.setFullYear(today.getFullYear() - 2);
@@ -89,18 +115,12 @@ const overalldataRouter = async (req, res) => {
       }
     );
 
-    // Instead of calling the Shiprocket endpoint, we fetch the shipping spend from the database.
-    // const shiprocketPromise = axios.get(`${SHIPROCKET_API_BASE_URL}/shipments`, { ... });
-
-    // Await the Shopify and Meta API calls concurrently.
-    const [shopifyResponse, metaResponse] = await Promise.all([
-      shopifyPromise,
-      metaPromise,
-    ]);
+    // Await both API calls concurrently.
+    const [orders, metaResponse] = await Promise.all([shopifyPromise, metaPromise]);
 
     // ----- Process Shopify Data -----
-    const orders = shopifyResponse.data.orders || [];
     const totalOrders = orders.length;
+    console.log("Total by shopify  Orders: ", totalOrders);
     let totalSales = 0;
     let orderCancellationCount = 0;
     let newCustomers = 0;
@@ -109,15 +129,14 @@ const overalldataRouter = async (req, res) => {
     let pendingCount = 0;
 
     orders.forEach((order) => {
-      // Sum total sales (assuming order.total_price is a string)
       totalSales += parseFloat(order.total_price);
 
-      // Count cancellations
+      // Count cancellations.
       if (order.cancelled_at) {
         orderCancellationCount++;
       }
 
-      // Count new vs. returning customers based on orders_count (if available)
+      // Count new vs. returning customers.
       if (order.customer) {
         const custOrders = parseInt(order.customer.orders_count, 10) || 0;
         if (custOrders <= 1) {
@@ -127,9 +146,9 @@ const overalldataRouter = async (req, res) => {
         }
       }
 
-      // Count order statuses
+      // Count order statuses.
       if (order.cancelled_at) {
-        // Already counted as cancelled
+        // Already counted as cancelled.
       } else if (order.fulfillment_status === "fulfilled") {
         completedCount++;
       } else {
@@ -140,7 +159,7 @@ const overalldataRouter = async (req, res) => {
     const avgOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
 
     // ----- Process Meta Data -----
-    // The insights endpoint returns an array of data; we take the first record.
+    // The insights endpoint returns an array; we take the first record.
     const insightsData =
       metaResponse.data.data && metaResponse.data.data[0]
         ? metaResponse.data.data[0]
@@ -148,19 +167,15 @@ const overalldataRouter = async (req, res) => {
     const marketingSpend = insightsData.spend ? parseFloat(insightsData.spend) : 0;
 
     // ----- Process Shiprocket Data (from Database) -----
-    // Retrieve shipping spend from the database instead of making a Shiprocket API request.
     const shippingSpend = shiprocketCred.shiprocket.metrics.totalShippingCost || 0;
 
     // ----- Compute Profit Figures -----
-    // Gross Profit: Total Sales minus Shipping Spend (from DB)
+    // Gross Profit = Total Sales minus Shipping Spend.
     const grossProfit = totalSales - shippingSpend;
-    // Net Profit: Gross Profit minus Marketing Spend (from Meta)
+    // Net Profit = Gross Profit minus Marketing Spend.
     const netProfit = grossProfit - marketingSpend;
-
-    // Profit percentages (as a percent of total sales)
     const grossProfitPercentage = totalSales > 0 ? (grossProfit / totalSales) * 100 : 0;
-    const netProfitPercentage = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
-    // Profit Margin: using net profit
+    const netProfitPercentage = totalOrders > 0 ? (netProfit / totalSales) * 100 : 0;
     const profitMargin = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
 
     // ----- Prepare Response Data Structure -----
@@ -176,7 +191,7 @@ const overalldataRouter = async (req, res) => {
         { bgColor: "#390083", title: "Total Sales", ruppes: `₹${totalSales.toFixed(2)}` },
         { bgColor: "#00848E", title: "Total Orders", ruppes: totalOrders.toString() },
         { bgColor: "#F49342", title: "Order Cancellation", ruppes: orderCancellationCount.toString() },
-        { bgColor: "#4489C8", title: "RTO", ruppes: shiprocketCred.shiprocket.metrics.rtoOrders.toString() }, // No dynamic RTO info provided
+        { bgColor: "#4489C8", title: "RTO", ruppes: shiprocketCred.shiprocket.metrics.rtoOrders.toString() },
         { bgColor: "#FDC00F", title: "Gross Profit", ruppes: `₹${grossProfit.toFixed(2)}` },
         { bgColor: "#FD6AC6", title: "Marketing", ruppes: `₹${marketingSpend.toFixed(2)}` },
         { bgColor: "#09347F", title: "Shipping", ruppes: `₹${shippingSpend.toFixed(2)}` },
@@ -184,7 +199,7 @@ const overalldataRouter = async (req, res) => {
       ],
       profit: [
         {
-          image: "profitImage.svg", // Replace with actual asset path if needed
+          image: "profitImage.svg", // Replace with actual asset path if needed.
           title: "Gross Profit",
           icon: "questionIcon.svg",
           ruppes: `₹${grossProfit.toFixed(2)}`,
