@@ -49,7 +49,6 @@ const getMetaData = async (req, res) => {
 
     // Call the Meta Graph API.
     const metaResponse = await axios.get(insightsUrl, { params: insightsParams });
-    console.log("Meta Insights response:", metaResponse.data);
     const insights = metaResponse.data.data || [];
 
     // Initialize aggregates and campaign-level aggregation.
@@ -129,9 +128,9 @@ const getMetaData = async (req, res) => {
 
     // Dashboard card data.
     const totalCollection = [
-      { bgColor: "#09347F", title: "Amount Spend", rupees: `₹${totalSpend.toFixed(2)}` },
-      { bgColor: "#4489C8", title: "Total Revenue", rupees: `₹${totalRevenue.toFixed(2)}` },
-      { bgColor: "#B391CC", title: "Total Orders", rupees: totalOrders },
+      { bgColor: "#09347F", title: "Amount Spend", rupees: `₹${totalSpend.toFixed(2)}`,tooltip:"Total amount spent on ads" },
+      { bgColor: "#4489C8", title: "Total Revenue", rupees: `₹${totalRevenue.toFixed(2)}`,tooltip:"Total revenue generated from ads" },
+      { bgColor: "#B391CC", title: "Total Orders", rupees: totalOrders,tooltip:"Total orders placed from ads" },
     ];
 
     const amountSpend = [
@@ -139,21 +138,25 @@ const getMetaData = async (req, res) => {
         bgColor: "#F49342",
         title: "CPP",
         rupees: totalOrders > 0 ? `₹${(totalSpend / totalOrders).toFixed(2)}` : "N/A",
+        tooltip:"Cost per purchase"
       },
       {
         bgColor: "#AB55FF",
         title: "ROAS",
         rupees: totalSpend > 0 ? `${(totalRevenue / totalSpend).toFixed(2)}X` : "N/A",
+        tooltip:"Return on ad spend"
       },
       {
         bgColor: "#FDC00F",
         title: "CTR",
         rupees: totalImpressions > 0 ? `${((totalClicks / totalImpressions) * 100).toFixed(2)}%` : "N/A",
+        tooltip:"Click-through rate"
       },
       {
         bgColor: "#7700D2",
         title: "CPC",
         rupees: totalClicks > 0 ? `₹${(totalSpend / totalClicks).toFixed(2)}` : "N/A",
+        tooltip:"Cost per click"
       },
     ];
 

@@ -124,10 +124,10 @@ const dashboard = async (req, res) => {
       }
 
       // Count delivered orders
-      if (order.status && order.status.trim().toUpperCase() === "DELIVERED") {
+      if (order.status && order.status.trim().toUpperCase().includes("DELIVERED")) {
         newDeliveredOrders++;
       }
-
+    
       // Count RTO orders - trim the status before checking to avoid formatting issues.
       if (
         order.status &&

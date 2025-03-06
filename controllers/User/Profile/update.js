@@ -10,11 +10,12 @@ const SignupValidation = require("../../../helpers/joi-validation");
 const { ObjectId } = require("mongoose").Types;
 
 const update = async (req, res) => {
+  console.log("req.body:c request hit");
   const { logger } = req;
   try {
     const { userId } = req;
     const { email, password, mobile, role } = req.body;
-
+console.log("req.body:",req.body);
     if (email || password || role) {
       let errorMsg;
       if (email) errorMsg = `Email ${ERROR_MSGS.NOT_EDITABLE}`;
@@ -63,6 +64,7 @@ const update = async (req, res) => {
       goal: updateData.goal,
       futureRevenue: updateData.futureRevenue,
     };
+    console.log("newData:", newData);
 
     return Response[statusCode === STATUS_CODE.OK ? "success" : "error"]({
       req,

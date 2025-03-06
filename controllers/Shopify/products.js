@@ -38,7 +38,7 @@ const fetchAllOrders = async (shopifyClient) => {
           url = null;
         }
       } else {
-        url = null;
+        url = null; 
       }
     } else {
       url = null;

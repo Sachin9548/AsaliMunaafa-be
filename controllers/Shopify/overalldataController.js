@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const Credentials = require("../../models/credentials");
+const BusinessDetails = require("../../models/businessDetails");
 
 // Helper function to extract the next page URL from Shopify's Link header.
 function extractNextUrl(linkHeader) {
@@ -20,7 +21,6 @@ function extractNextUrl(linkHeader) {
 // Fetch all Shopify orders using pagination.
 async function fetchAllOrders(shopifyStore, shopifyAccessToken) {
   let orders = [];
-  // Request the maximum number (250) per page.
   let url = `https://${shopifyStore}/admin/api/2023-01/orders.json?status=any&limit=250`;
 
   while (url) {
@@ -92,6 +92,20 @@ const overalldataRouter = async (req, res) => {
       });
     }
 
+    // ----- Retrieve Business Details (for Manufacturing Cost) -----
+    const businessDetails = await BusinessDetails.findOne({ userId: userId });
+    if (!businessDetails) {
+      return res.status(404).json({
+        status: "error",
+        msg: "Business details not found",
+      });
+    }
+    // Build a map for quick lookup of manufacturing costs by productId.
+    const productCostMap = {};
+    businessDetails.products.forEach((product) => {
+      productCostMap[product.productId] = product.manufacturingCost;
+    });
+
     // ----- Fire off API calls concurrently -----
 
     // 1. Shopify Orders (using pagination to fetch all orders)
@@ -120,35 +134,21 @@ const overalldataRouter = async (req, res) => {
 
     // ----- Process Shopify Data -----
     const totalOrders = orders.length;
-    console.log("Total by shopify  Orders: ", totalOrders);
     let totalSales = 0;
     let orderCancellationCount = 0;
-    let newCustomers = 0;
-    let returningCustomers = 0;
     let completedCount = 0;
     let pendingCount = 0;
 
+    // Calculate total sales, cancellations, and order statuses.
     orders.forEach((order) => {
       totalSales += parseFloat(order.total_price);
 
-      // Count cancellations.
       if (order.cancelled_at) {
         orderCancellationCount++;
       }
 
-      // Count new vs. returning customers.
-      if (order.customer) {
-        const custOrders = parseInt(order.customer.orders_count, 10) || 0;
-        if (custOrders <= 1) {
-          newCustomers++;
-        } else {
-          returningCustomers++;
-        }
-      }
-
-      // Count order statuses.
       if (order.cancelled_at) {
-        // Already counted as cancelled.
+        // already counted as cancelled.
       } else if (order.fulfillment_status === "fulfilled") {
         completedCount++;
       } else {
@@ -156,10 +156,51 @@ const overalldataRouter = async (req, res) => {
       }
     });
 
+    // CUSTOMER ANALYTICS: Build a customersMap to track first order date and order count per customer.
+    const customersMap = {};
+    orders.forEach((order) => {
+      if (order.customer && order.customer.id) {
+        const custId = order.customer.id;
+        if (!customersMap[custId]) {
+          customersMap[custId] = {
+            firstOrderDate: order.created_at,
+            ordersCount: 1,
+          };
+        } else {
+          customersMap[custId].ordersCount++;
+          if (new Date(order.created_at) < new Date(customersMap[custId].firstOrderDate)) {
+            customersMap[custId].firstOrderDate = order.created_at;
+          }
+        }
+      }
+    });
+    const totalCustomers = Object.keys(customersMap).length;
+    let newCustomers = 0;
+    if (req.query.start_date && req.query.end_date) {
+      const startDate = new Date(req.query.start_date);
+      const endDate = new Date(req.query.end_date);
+      newCustomers = new Set(
+        orders
+          .filter(
+            (order) =>
+              order.customer &&
+              order.customer.id &&
+              new Date(customersMap[order.customer.id].firstOrderDate) >= startDate &&
+              new Date(customersMap[order.customer.id].firstOrderDate) <= endDate
+          )
+          .map((order) => order.customer.id)
+      ).size;
+    } else {
+      // Count customers with only one order as new.
+      newCustomers = Object.values(customersMap).filter(
+        (cust) => cust.ordersCount === 1
+      ).length;
+    }
+    const returningCustomers = totalCustomers - newCustomers;
+
     const avgOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
 
     // ----- Process Meta Data -----
-    // The insights endpoint returns an array; we take the first record.
     const insightsData =
       metaResponse.data.data && metaResponse.data.data[0]
         ? metaResponse.data.data[0]
@@ -169,43 +210,57 @@ const overalldataRouter = async (req, res) => {
     // ----- Process Shiprocket Data (from Database) -----
     const shippingSpend = shiprocketCred.shiprocket.metrics.totalShippingCost || 0;
 
-    // ----- Compute Profit Figures -----
-    // Gross Profit = Total Sales minus Shipping Spend.
-    const grossProfit = totalSales - shippingSpend;
-    // Net Profit = Gross Profit minus Marketing Spend.
-    const netProfit = grossProfit - marketingSpend;
+    // ----- Calculate Total Manufacturing Cost -----
+    // Assuming each order has a `line_items` array with items having a `product_id` and `quantity`
+    let totalManufacturingCost = 0;
+    orders.forEach((order) => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach((item) => {
+          const prodId = item.product_id ? item.product_id.toString() : null;
+          const costPerUnit = prodId && productCostMap[prodId] ? productCostMap[prodId] : 0;
+          totalManufacturingCost += costPerUnit * (item.quantity || 0);
+        });
+      }
+    });
+    // console.log("Total Manufacturing Cost:", totalManufacturingCost);
+
+    // ----- Compute Profit Figures ----- 
+    // Here, gross profit is defined as total sales minus total manufacturing cost.
+    const grossProfit = totalSales - totalManufacturingCost;
+    const netProfit = grossProfit - marketingSpend - shippingSpend;
     const grossProfitPercentage = totalSales > 0 ? (grossProfit / totalSales) * 100 : 0;
-    const netProfitPercentage = totalOrders > 0 ? (netProfit / totalSales) * 100 : 0;
+    const netProfitPercentage = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
     const profitMargin = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
 
     // ----- Prepare Response Data Structure -----
     const dynamicData = {
       totalSales: [
-        { key: "Total Sales", value: `₹${totalSales.toFixed(2)}` },
-        { key: "Orders No.", value: totalOrders.toString() },
-        { key: "Marketing Spend", value: `₹${marketingSpend.toFixed(2)}` },
-        { key: "Shipping Spend", value: `₹${shippingSpend.toFixed(2)}` },
-        { key: "Profit Margin", value: `${profitMargin.toFixed(2)}%` },
+        { key: "Total Revenue", value: `₹${totalSales.toFixed(2)}`,tooltip: "Total Revenue: Total income from sales." },
+        { key: "Orders No.", value: totalOrders.toString() ,tooltip: "Orders Number: Total number of orders received."},
+        { key: "Marketing Spend", value: `₹${marketingSpend.toFixed(2)}`,tooltip: "Marketing Spend: Total expenditure on marketing." },
+        { key: "Shipping Spend", value: `₹${shippingSpend.toFixed(2)}`, tooltip: "Shipping Spend: Total expenditure on shipping."  },
+        { key: "Profit Margin", value: `${profitMargin.toFixed(2)}%`,tooltip: "Profit Margin: (Profit / Revenue) * 100." },
       ],
       totalCollection: [
-        { bgColor: "#390083", title: "Total Sales", ruppes: `₹${totalSales.toFixed(2)}` },
-        { bgColor: "#00848E", title: "Total Orders", ruppes: totalOrders.toString() },
-        { bgColor: "#F49342", title: "Order Cancellation", ruppes: orderCancellationCount.toString() },
-        { bgColor: "#4489C8", title: "RTO", ruppes: shiprocketCred.shiprocket.metrics.rtoOrders.toString() },
-        { bgColor: "#FDC00F", title: "Gross Profit", ruppes: `₹${grossProfit.toFixed(2)}` },
-        { bgColor: "#FD6AC6", title: "Marketing", ruppes: `₹${marketingSpend.toFixed(2)}` },
-        { bgColor: "#09347F", title: "Shipping", ruppes: `₹${shippingSpend.toFixed(2)}` },
-        { bgColor: "#B391CC", title: "Net Sales", ruppes: `₹${totalSales.toFixed(2)}` },
+        { bgColor: "#390083", title: "Total Sales", ruppes: `₹${totalSales.toFixed(2)}`, tooltip: "Total Sales: Total income from sales." },
+        { bgColor: "#00848E", title: "Total Orders", ruppes: totalOrders.toString(), tooltip: "Total Orders: Total number of orders received." },
+        { bgColor: "#F49342", title: "Order Cancellation", ruppes: orderCancellationCount.toString(), tooltip: "Order Cancellation: Total number of orders cancelled." },
+        { bgColor: "#4489C8", title: "RTO", ruppes: shiprocketCred.shiprocket.metrics.rtoOrders.toString(), tooltip: "RTO: Total number of orders returned to origin." },
+        { bgColor: "#FDC00F", title: "Gross Profit", ruppes: `₹${grossProfit.toFixed(2)}`, tooltip: "Gross Profit: Total revenue minus total manufacturing cost." },
+        { bgColor: "#FD6AC6", title: "Marketing", ruppes: `₹${marketingSpend.toFixed(2)}`, tooltip: "Marketing: Total expenditure on marketing." },
+        { bgColor: "#09347F", title: "Shipping", ruppes: `₹${shippingSpend.toFixed(2)}` , tooltip: "Shipping: Total expenditure on shipping." },
+        { bgColor: "#B391CC", title: "Net Sales", ruppes: `₹${totalSales.toFixed(2)}` , tooltip: "Net Sales: Total revenue - marketing and shipping costs." },
       ],
       profit: [
         {
-          image: "profitImage.svg", // Replace with actual asset path if needed.
+          image: "profitImage.svg",
           title: "Gross Profit",
           icon: "questionIcon.svg",
           ruppes: `₹${grossProfit.toFixed(2)}`,
           description: "Gross Margin",
           percentage: `${grossProfitPercentage.toFixed(2)}%`,
-          height: 310,
+          height: 250,
+          tooltip: "Gross Profit: Total revenue - total manufacturing cost.",
         },
         {
           image: "profitImage.svg",
@@ -214,7 +269,8 @@ const overalldataRouter = async (req, res) => {
           ruppes: `₹${netProfit.toFixed(2)}`,
           description: "Net Margin",
           percentage: `${netProfitPercentage.toFixed(2)}%`,
-          height: 310,
+          height: 250,
+          tooltip: "Net Profit: Gross profit - marketing and shipping costs.",
         },
       ],
       grossProfitnetProfit: {
@@ -258,6 +314,7 @@ const overalldataRouter = async (req, res) => {
       marketingSpend: `₹${marketingSpend.toFixed(2)}`,
       shippingSpend: `₹${shippingSpend.toFixed(2)}`,
       netSales: `₹${totalSales.toFixed(2)}`,
+      totalCustomers, // Total unique customers.
     };
 
     return res.status(200).json({

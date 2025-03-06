@@ -1,6 +1,6 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 const { ObjectId } = mongoose.Types;
-// Define a schema
+
 const BusinessDetailsSchema = new mongoose.Schema({
   userId: {
     type: ObjectId,
@@ -17,48 +17,51 @@ const BusinessDetailsSchema = new mongoose.Schema({
   aboutBusiness: [
     {
       question: {
-        type: String
+        type: String,
       },
       answer: {
-        type: String
-      }
-    }
+        type: String,
+      },
+    },
   ],
-  product: {
-    name: {
-      type: String,
-      default: null
+  products: [
+    {
+      productId: {
+        type: String,
+      },
+      productName: {
+        type: String,
+      },
+      productPrice: {
+        type: Number,
+      },
+      manufacturingCost: {
+        type: Number,
+      },
     },
-    sellingPrice: {
-      type: Number,
-      default: null
-    },
-    ManufacturingCost: {
-      type: String,
-      default: null
-    },
-  },
+  ],
   businessDetailsSteps: {
     step1: {
       type: Boolean,
-      default: false
+      default: false,
     },
     step2: {
       type: Boolean,
-      default: false
+      default: false,
     },
     step3: {
       type: Boolean,
-      default: false
+      default: false,
     },
     step4: {
       type: Boolean,
-      default: false
+      default: false,
     },
     step5: {
       type: Boolean,
-      default: false
+      default: false,
     },
   },
 });
-module.exports = mongoose.model('BusinessDetails', BusinessDetailsSchema);
+
+module.exports = mongoose.model("BusinessDetails", BusinessDetailsSchema);
