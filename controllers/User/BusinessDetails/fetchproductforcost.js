@@ -45,15 +45,39 @@ const fetchProducts = async (req, res) => {
       timeout: 10000,
     });
 
-    // Fetch products from Shopify.
-    const response = await shopifyClient.get("/products.json");
+    let products = [];
+    // Start with maximum allowed products per page
+    let endpoint = `/products.json?limit=250`;
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const response = await shopifyClient.get(endpoint);
+      // Concatenate the products from the current page
+      products = products.concat(response.data.products);
+
+      // Shopify provides pagination information in the Link header.
+      const linkHeader = response.headers.link;
+      if (linkHeader) {
+        // Use a regular expression to find the "next" page URL
+        const matches = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        if (matches && matches[1]) {
+          // Extract the relative URL (path + query) from the full URL
+          const nextUrl = new URL(matches[1]);
+          endpoint = nextUrl.pathname + nextUrl.search;
+        } else {
+          hasNextPage = false;
+        }
+      } else {
+        hasNextPage = false;
+      }
+    }
 
     return Response.success({
       req,
       res,
       status: STATUS_CODE.OK,
       msg: INFO_MSGS.SUCCESS,
-      data: { products: response.data.products },
+      data: { products },
     });
   } catch (error) {
     console.error(
