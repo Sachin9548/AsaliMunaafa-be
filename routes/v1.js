@@ -1,9 +1,9 @@
 const { Router } = require("express");
 const v1 = Router();
 
-v1.get("/", (req, res) => {
-  res.status(200).json({ message: "v1 routes working!!" });
-});
+// v1.get("/", (req, res) => {
+//   res.status(200).json({ message: "v1 routes working!!" });
+// });
 
 const userRoute = require("./User/routes");
 const adminRoute = require("./Admin/routes");
