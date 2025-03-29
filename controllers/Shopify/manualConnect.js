@@ -61,9 +61,11 @@ const manualConnect = async (req, res) => {
           },
         }
       );
+      console.log("Shopify App Installed Successfully", testResponse);
       // If the request is successful (HTTP 200), the credentials are valid
       if (testResponse.status === 200) {
         appInstalled = true;
+        cpnsole.log("Shopify App Installed Successfully", testResponse);
       }
     } catch (error) {
       // If the test request fails, appInstalled remains false
